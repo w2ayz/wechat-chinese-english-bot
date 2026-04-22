@@ -1,4 +1,4 @@
-# WeChat Chinese–English Bot v1.0
+# WeChat Chinese–English Bot v1.1
 
 A real-time Chinese↔English translation bot for WeChat, built on the [Openclaw](https://openclaw.ai) AI agent platform. All translation happens at the plugin layer — messages are intercepted before reaching the agent, translated, and delivered back as both a text bubble and a downloadable MP3 audio file.
 
@@ -138,7 +138,23 @@ bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh
 
 This copies `process-message.patched.ts` over the stock plugin file and backs up the original.
 
-> **Important:** Openclaw auto-updates the `openclaw-weixin` plugin from npm and will overwrite the patch. Re-run `patch.sh` after any plugin update. Use `patch.sh --check` to verify the patch is still in place.
+#### ⚠️ Auto-update problem
+
+Openclaw automatically updates the `openclaw-weixin` plugin from npm. Each update downloads a fresh copy of the extension and **overwrites `process-message.ts`**, removing all CE patches.
+
+**How to detect this has happened:**
+```bash
+bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh --check
+# ❌ CE patches are NOT present — run: bash patch.sh
+```
+
+**How to re-apply the patches manually:**
+```bash
+bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh
+openclaw gateway --force
+```
+
+Run these two commands any time CE translation stops working after an Openclaw update. The `patch.sh --check` command is safe to run at any time and makes no changes.
 
 ### 4. Restart the Openclaw gateway
 
@@ -206,6 +222,7 @@ The plugin reads this file **before** downloading voice media, so a `/ce off` co
 - Ollama model must be running locally (`ollama serve`)
 - Whisper `turbo` model downloads ~800 MB on first run
 - Audio is delivered as a file attachment, not a native WeChat voice bubble (WeChat's iLink bot API does not support third-party voice bubble playback in all configurations)
+- The `process-message.ts` patch is erased by every Openclaw plugin auto-update — must be manually re-applied with `patch.sh` (see Installation step 3)
 
 ---
 

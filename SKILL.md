@@ -286,6 +286,49 @@ State file: `~/.openclaw/memory/wechat_ce_mode.json` → `{"enabled": true}`
 
 ---
 
+## Auto-Update Problem
+
+Openclaw automatically updates the `openclaw-weixin` plugin from npm. When this happens, the extension directory (`~/.openclaw/extensions/openclaw-weixin/`) is re-extracted from a fresh tarball, **overwriting `process-message.ts`** and removing all CE patches. The gateway then restarts with the stock plugin — CE translation silently stops working.
+
+### How to detect
+
+```bash
+bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh --check
+```
+
+Output will be one of:
+- `✅ CE patches are present in process-message.ts` — patches are in place, nothing to do
+- `❌ CE patches are NOT present — run: bash patch.sh` — patches were wiped, re-apply
+
+### How to re-apply manually
+
+```bash
+# 1. Re-apply the patch
+bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh
+
+# 2. Restart the gateway
+openclaw gateway --force
+```
+
+`patch.sh` copies `process-message.patched.ts` (included in this repo) over the stock file and backs up the original to `process-message.ts.bak-pre-ce-patch`.
+
+### When to re-apply
+
+Re-run the two commands above whenever:
+- CE translation stops working after an Openclaw update
+- You see `Downloading @tencent-weixin/openclaw-weixin@latest` in the Openclaw logs (`/tmp/openclaw/openclaw-*.log`)
+- `patch.sh --check` reports patches missing
+
+### patch.sh reference
+
+```bash
+bash patch.sh            # apply patches (copies process-message.patched.ts → extension)
+bash patch.sh --check    # check if patches are present (read-only, safe to run anytime)
+bash patch.sh --restore  # restore the pre-patch backup (undo)
+```
+
+---
+
 ## Race Condition Notes
 
 CE mode is checked **before** the media download in `process-message.ts`. This means:
@@ -306,4 +349,6 @@ For truly simultaneous messages (recorded voice + `/ce off` sent within millisec
 | No audio file returned | Edge TTS script path wrong | Check `EDGE_TTS_SCRIPT` env var; verify `tts-converter.js` exists |
 | `CE exited 1: ...` | Whisper or Ollama not running | `ollama serve &` and check Whisper install |
 | Translation garbled | Wrong Ollama model loaded | `ollama list`; `ollama pull qwen2.5:7b-instruct` |
-| Gateway rejects plugin | TypeScript compile error in patch | Check `openclaw-gateway` startup logs in `/tmp/openclaw/` |
+| Gateway rejects plugin | TypeScript compile error in patch | Check gateway startup logs in `/tmp/openclaw/openclaw-*.log` |
+| CE translation stops after Openclaw update | Auto-update overwrote `process-message.ts` | Run `bash patch.sh --check`, then `bash patch.sh && openclaw gateway --force` |
+| `patch.sh` says "reference file not found" | `process-message.patched.ts` missing from skill dir | Re-clone the repo or copy the file from GitHub |
