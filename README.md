@@ -130,14 +130,20 @@ cp -r openclaw-wechat-ce ~/.openclaw/workspace/skills/
 
 ### 3. Patch the openclaw-weixin plugin
 
-The CE intercept requires changes to `process-message.ts` inside the openclaw-weixin extension. See **SKILL.md** for the exact patch points.
+The CE intercept requires changes to `process-message.ts` inside the openclaw-weixin extension. A pre-patched reference file and a one-command patch script are included:
+
+```bash
+bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh
+```
+
+This copies `process-message.patched.ts` over the stock plugin file and backs up the original.
+
+> **Important:** Openclaw auto-updates the `openclaw-weixin` plugin from npm and will overwrite the patch. Re-run `patch.sh` after any plugin update. Use `patch.sh --check` to verify the patch is still in place.
 
 ### 4. Restart the Openclaw gateway
 
 ```bash
-# macOS
-pkill openclaw-gateway
-openclaw-gateway &
+openclaw gateway --force
 ```
 
 ---
