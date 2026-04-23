@@ -286,38 +286,62 @@ State file: `~/.openclaw/memory/wechat_ce_mode.json` → `{"enabled": true}`
 
 ---
 
-## Auto-Update Problem
+## Auto-Update Problem & Survival (v1.2)
 
-Openclaw automatically updates the `openclaw-weixin` plugin from npm. When this happens, the extension directory (`~/.openclaw/extensions/openclaw-weixin/`) is re-extracted from a fresh tarball, **overwriting `process-message.ts`** and removing all CE patches. The gateway then restarts with the stock plugin — CE translation silently stops working.
+Openclaw automatically updates the `openclaw-weixin` plugin from npm. When this happens, the extension directory is re-extracted from a fresh tarball, **overwriting `process-message.ts`** and removing all CE patches. The gateway then restarts with the stock plugin — CE translation silently stops working.
 
-### How to detect
+### v1.2 solution: macOS LaunchAgent with WatchPaths
+
+Two files work together to fully automate patch survival:
+
+| File | Purpose |
+|------|---------|
+| `boot-patch.sh` | Checks patch presence; re-applies and restarts gateway if missing |
+| `ai.openclaw.wechat-ce-patch.plist` | LaunchAgent with two triggers: login + WatchPaths |
+
+**Two automatic triggers:**
+1. **Every reboot/login** (`RunAtLoad: true`) — ensures patch is present after any restart
+2. **WatchPaths on `process-message.ts`** — fires the instant npm overwrites the file during an update, re-patches and restarts gateway automatically, no manual steps needed
+
+### One-time setup
+
+```bash
+# Copy plist to LaunchAgents directory
+cp ~/.openclaw/workspace/skills/openclaw-wechat-ce/ai.openclaw.wechat-ce-patch.plist \
+   ~/Library/LaunchAgents/
+
+# Load the agent (survives future reboots automatically)
+launchctl load ~/Library/LaunchAgents/ai.openclaw.wechat-ce-patch.plist
+```
+
+**Verify it loaded:**
+```bash
+launchctl list | grep wechat-ce
+# → -  0  ai.openclaw.wechat-ce-patch
+```
+
+**Check the log:**
+```bash
+tail -20 /tmp/openclaw/wechat-ce-patch.log
+```
+
+### boot-patch.sh logic
+
+```
+1. Log that it was triggered
+2. grep process-message.ts for "_isCEModeOn"
+   → found: log "already present", exit 0
+   → missing: run patch.sh, sleep 3, openclaw gateway --force
+3. Log result
+```
+
+### Manual fallback (if LaunchAgent not set up)
 
 ```bash
 bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh --check
-```
-
-Output will be one of:
-- `✅ CE patches are present in process-message.ts` — patches are in place, nothing to do
-- `❌ CE patches are NOT present — run: bash patch.sh` — patches were wiped, re-apply
-
-### How to re-apply manually
-
-```bash
-# 1. Re-apply the patch
 bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh
-
-# 2. Restart the gateway
 openclaw gateway --force
 ```
-
-`patch.sh` copies `process-message.patched.ts` (included in this repo) over the stock file and backs up the original to `process-message.ts.bak-pre-ce-patch`.
-
-### When to re-apply
-
-Re-run the two commands above whenever:
-- CE translation stops working after an Openclaw update
-- You see `Downloading @tencent-weixin/openclaw-weixin@latest` in the Openclaw logs (`/tmp/openclaw/openclaw-*.log`)
-- `patch.sh --check` reports patches missing
 
 ### patch.sh reference
 

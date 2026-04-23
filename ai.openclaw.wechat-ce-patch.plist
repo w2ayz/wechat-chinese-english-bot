@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.openclaw.wechat-ce-patch</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/vzeng/.openclaw/workspace/skills/openclaw-wechat-ce/boot-patch.sh</string>
+    </array>
+
+    <!-- Trigger 1: run at every login/reboot -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Trigger 2: fire when openclaw-weixin npm update overwrites the file -->
+    <key>WatchPaths</key>
+    <array>
+        <string>/Users/vzeng/.openclaw/extensions/openclaw-weixin/src/messaging/process-message.ts</string>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/openclaw/wechat-ce-patch.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/openclaw/wechat-ce-patch.log</string>
+</dict>
+</plist>

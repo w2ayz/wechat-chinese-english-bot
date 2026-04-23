@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.2] — 2026-04-22
+
+### Added
+- `boot-patch.sh` — script called by LaunchAgent on login and on file-change events; checks patch presence, re-applies if missing, restarts gateway
+- `ai.openclaw.wechat-ce-patch.plist` — macOS LaunchAgent with two triggers: `RunAtLoad` (every reboot/login) and `WatchPaths` on `process-message.ts` (fires instantly when npm update overwrites the file)
+
+### Changed
+- Patch survival is now **fully automatic** — no manual re-apply needed after Openclaw plugin updates
+- README and SKILL.md updated with LaunchAgent setup instructions and boot-patch.sh logic documentation
+
+---
+
 ## [1.1] — 2026-04-22
 
 ### Added
