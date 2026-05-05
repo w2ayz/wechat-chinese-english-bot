@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [1.3] — 2026-05-05
+
+### Fixed
+- **CE intercept sending raw JSON as text**: The plugin was outputting the raw JSON from `ce-handler.py` (e.g. `{"label":"English text","text":"...","audio":"/tmp/...mp3"}`) directly to WeChat instead of parsing it. Fixed to parse the JSON, send the translated text, and deliver the MP3 via `sendWeixinMediaFile`.
+- **CE patch targeting wrong file**: After `openclaw doctor --fix` installed a second copy of the plugin at the npm path (`~/.openclaw/npm/node_modules/@tencent-weixin/openclaw-weixin/`), the gateway loaded that compiled JS instead of the patched TypeScript extension. The `/ce` command returned "Unknown command" because the npm dist had no CE code.
+- **`patch.sh` patching wrong file**: Was targeting `extensions/.../process-message.ts` (TypeScript source not loaded by gateway). Now correctly targets the npm dist JS: `npm/node_modules/@tencent-weixin/openclaw-weixin/dist/src/messaging/process-message.js`.
+
+### Changed
+- **`patch.sh`**: Updated target from TypeScript extension source to npm dist JS (`process-message.js`). Check marker and backup logic updated accordingly.
+- **`process-message.patched.js`**: Added compiled JS reference file (replaces `.patched.ts` as the patch source). This is the file `patch.sh` copies into place.
+- **`boot-patch.sh`**: Updated to check and patch the npm dist JS instead of the TypeScript extension source.
+- **LaunchAgent `WatchPaths`**: Updated to watch `process-message.js` in the npm dist — triggers auto-repatch when `openclaw update` overwrites the npm package.
+
+---
+
 ## [1.2] — 2026-04-22
 
 ### Added
