@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # patch.sh — Apply CE translation patches to the openclaw-weixin plugin.
 #
-# Run this after any openclaw-weixin plugin update, which auto-overwrites
-# the extension files from npm and removes these patches.
+# Targets the npm dist JS (the file the gateway actually loads), NOT the
+# TypeScript extension source. After openclaw update reinstalls the npm
+# package, run this again (or let boot-patch.sh handle it automatically).
 #
 # Usage:
 #   bash patch.sh            # apply patches
@@ -10,21 +11,21 @@
 #   bash patch.sh --restore  # restore from backup (undo patches)
 #
 # What it patches:
-#   ~/.openclaw/extensions/openclaw-weixin/src/messaging/process-message.ts
+#   ~/.openclaw/npm/node_modules/@tencent-weixin/openclaw-weixin/dist/src/messaging/process-message.js
 #
 # The patch adds:
 #   A. import os from "node:os"
 #   B. _isCEModeOn(), _hasVoiceItem(), _handleCECommand() helpers
 #   C. CE command handler (before slash command block)
-#   D. Early CE mode flag (before media download, closes race window)
+#   D. Early CE mode flag (before media download)
 #   E. CE intercept block (after media download, before agent dispatch)
 
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET="$HOME/.openclaw/extensions/openclaw-weixin/src/messaging/process-message.ts"
+TARGET="$HOME/.openclaw/npm/node_modules/@tencent-weixin/openclaw-weixin/dist/src/messaging/process-message.js"
 BACKUP="${TARGET}.bak-pre-ce-patch"
-PATCHED_REF="$SKILL_DIR/process-message.patched.ts"
+PATCHED_REF="$SKILL_DIR/process-message.patched.js"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,7 @@ check_already_patched() {
 
 if [[ "${1:-}" == "--check" ]]; then
   if check_already_patched; then
-    green "✅ CE patches are present in process-message.ts"
+    green "✅ CE patches are present in process-message.js (npm dist)"
   else
     red "❌ CE patches are NOT present — run: bash patch.sh"
   fi
@@ -52,7 +53,7 @@ fi
 if [[ "${1:-}" == "--restore" ]]; then
   if [[ -f "$BACKUP" ]]; then
     cp "$BACKUP" "$TARGET"
-    green "✅ Restored original process-message.ts from $BACKUP"
+    green "✅ Restored original process-message.js from $BACKUP"
   else
     red "❌ No backup found at $BACKUP"
     exit 1
@@ -64,7 +65,12 @@ fi
 
 if [[ ! -f "$TARGET" ]]; then
   red "❌ Target not found: $TARGET"
-  red "   Is the openclaw-weixin plugin installed?"
+  red "   Is the openclaw-weixin npm package installed?"
+  exit 1
+fi
+
+if [[ ! -f "$PATCHED_REF" ]]; then
+  red "❌ Reference patch file not found: $PATCHED_REF"
   exit 1
 fi
 
@@ -74,19 +80,11 @@ if check_already_patched; then
   exit 0
 fi
 
-# Use the pre-patched reference file if available
-if [[ -f "$PATCHED_REF" ]]; then
-  echo "Backing up original → $BACKUP"
-  cp "$TARGET" "$BACKUP"
-  echo "Applying patch from reference file…"
-  cp "$PATCHED_REF" "$TARGET"
-  green "✅ Patch applied from $PATCHED_REF"
-  echo ""
-  echo "Restart the gateway to pick up changes:"
-  echo "  openclaw gateway --force"
-  exit 0
-fi
-
-red "❌ Reference patch file not found: $PATCHED_REF"
-red "   Clone the full skill repo to get process-message.patched.ts"
-exit 1
+echo "Backing up original → $BACKUP"
+cp "$TARGET" "$BACKUP"
+echo "Applying patch from reference file…"
+cp "$PATCHED_REF" "$TARGET"
+green "✅ Patch applied from $PATCHED_REF"
+echo ""
+echo "Restart the gateway to pick up changes:"
+echo "  openclaw gateway restart"
