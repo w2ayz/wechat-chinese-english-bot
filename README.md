@@ -1,4 +1,4 @@
-# WeChat Chinese–English Bot v1.2
+# WeChat Chinese–English Bot v1.3
 
 A real-time Chinese↔English translation bot for WeChat, built on the [Openclaw](https://openclaw.ai) AI agent platform. All translation happens at the plugin layer — messages are intercepted before reaching the agent, translated, and delivered back as both a text bubble and a downloadable MP3 audio file.
 
@@ -85,7 +85,8 @@ openclaw-wechat-ce/
 ├── CHANGELOG.md
 ├── patch.sh                        # Apply/check/restore the process-message.ts patch
 ├── boot-patch.sh                   # Called by LaunchAgent on login and file-change events
-├── process-message.patched.ts      # Pre-patched plugin file (used by patch.sh)
+├── process-message.patched.js      # Pre-patched JS dist file (used by patch.sh)
+├── process-message.patched.ts      # Legacy TypeScript reference (archived, not used)
 └── scripts/
     ├── ce-handler.py               # Main pipeline: Whisper → Ollama → Edge TTS
     └── mode.py                     # Read/set CE mode from the command line
@@ -96,13 +97,12 @@ edge-tts/
     └── tts-converter.js            # Edge TTS Node.js wrapper
 ```
 
-The plugin patch lives in the Openclaw-weixin extension:
+The CE patch targets the compiled npm dist (the file the gateway actually loads):
 ```
-extensions/openclaw-weixin/src/messaging/
-├── process-message.ts              # CE intercept + command handling (patched)
-├── send-media.ts                   # Audio routed as MP3 file attachment
-└── send.ts                         # sendVoiceMessageWeixin (reserved for future use)
+~/.openclaw/npm/node_modules/@tencent-weixin/openclaw-weixin/dist/src/messaging/
+└── process-message.js              # CE intercept + command handling (patched)
 ```
+> **v1.3:** The patch was moved from the TypeScript extension source to the compiled JS dist. `openclaw doctor --fix` installs a second copy of the plugin at the npm path; the gateway loads that copy, so the patch must target it.
 
 ---
 
@@ -134,13 +134,13 @@ cp -r openclaw-wechat-ce ~/.openclaw/workspace/skills/
 
 ### 3. Patch the openclaw-weixin plugin
 
-The CE intercept requires changes to `process-message.ts` inside the openclaw-weixin extension. A pre-patched reference file and a one-command patch script are included:
+The CE intercept requires changes to the compiled npm dist JS. A pre-patched reference file and a one-command patch script are included:
 
 ```bash
-bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh
+bash ~/.openclaw/workspace/skills/wechat-ce/patch.sh
 ```
 
-This copies `process-message.patched.ts` over the stock plugin file and backs up the original.
+This copies `process-message.patched.js` over the npm dist and backs up the original.
 
 #### Auto-update survival (automatic)
 
@@ -149,12 +149,12 @@ Openclaw automatically updates the `openclaw-weixin` plugin from npm. Each updat
 **v1.2 solves this automatically** using a macOS LaunchAgent with two triggers:
 
 1. **Every reboot/login** — checks patch presence on startup, applies if missing
-2. **WatchPaths** — fires the instant npm overwrites `process-message.ts`, re-patches and restarts the gateway with no manual steps
+2. **WatchPaths** — fires the instant npm overwrites `process-message.js`, re-patches and restarts the gateway with no manual steps
 
 **Setup (one-time):**
 ```bash
 # 1. Copy the plist to LaunchAgents
-cp ~/path/to/openclaw-wechat-ce/ai.openclaw.wechat-ce-patch.plist \
+cp ~/.openclaw/workspace/skills/wechat-ce/ai.openclaw.wechat-ce-patch.plist \
    ~/Library/LaunchAgents/
 
 # 2. Load it
@@ -168,15 +168,15 @@ tail -20 /tmp/openclaw/wechat-ce-patch.log
 
 **Manual fallback** (if LaunchAgent is not set up):
 ```bash
-bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh --check
-bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh
-openclaw gateway --force
+bash ~/.openclaw/workspace/skills/wechat-ce/patch.sh --check
+bash ~/.openclaw/workspace/skills/wechat-ce/patch.sh
+openclaw gateway restart
 ```
 
 ### 4. Restart the Openclaw gateway
 
 ```bash
-openclaw gateway --force
+openclaw gateway restart
 ```
 
 ---
@@ -214,10 +214,10 @@ export TMP_DIR=/tmp/my-ce-wechat
 
 **Check current CE mode from the terminal:**
 ```bash
-python3 ~/.openclaw/workspace/skills/openclaw-wechat-ce/scripts/mode.py
+python3 ~/.openclaw/workspace/skills/wechat-ce/scripts/mode.py
 # → on  or  off
 
-python3 ~/.openclaw/workspace/skills/openclaw-wechat-ce/scripts/mode.py off
+python3 ~/.openclaw/workspace/skills/wechat-ce/scripts/mode.py off
 ```
 
 ---
@@ -239,7 +239,7 @@ The plugin reads this file **before** downloading voice media, so a `/ce off` co
 - Ollama model must be running locally (`ollama serve`)
 - Whisper `turbo` model downloads ~800 MB on first run
 - Audio is delivered as a file attachment, not a native WeChat voice bubble (WeChat's iLink bot API does not support third-party voice bubble playback in all configurations)
-- The `process-message.ts` patch is erased by every Openclaw plugin auto-update — automatically recovered by the LaunchAgent (`boot-patch.sh` + `WatchPaths`)
+- The `process-message.js` (npm dist) patch is erased by every `openclaw update` — automatically recovered by the LaunchAgent (`boot-patch.sh` + `WatchPaths`)
 
 ---
 
