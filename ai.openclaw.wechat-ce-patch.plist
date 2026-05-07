@@ -8,22 +8,21 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/vzeng/.openclaw/workspace/skills/openclaw-wechat-ce/boot-patch.sh</string>
+        <string>/Users/w2ayz/.openclaw/workspace/skills/wechat-ce/boot-patch.sh</string>
     </array>
 
-    <!-- Trigger 1: run at every login/reboot -->
+    <!-- Run once at login -->
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- Trigger 2: fire when openclaw-weixin npm update overwrites the file -->
+    <!-- Also re-run whenever the plugin file is overwritten by openclaw update -->
     <key>WatchPaths</key>
     <array>
-        <string>/Users/vzeng/.openclaw/extensions/openclaw-weixin/src/messaging/process-message.ts</string>
+        <string>/Users/w2ayz/.openclaw/npm/node_modules/@tencent-weixin/openclaw-weixin/dist/src/messaging/process-message.js</string>
     </array>
 
     <key>StandardOutPath</key>
     <string>/tmp/openclaw/wechat-ce-patch.log</string>
-
     <key>StandardErrorPath</key>
     <string>/tmp/openclaw/wechat-ce-patch.log</string>
 </dict>
