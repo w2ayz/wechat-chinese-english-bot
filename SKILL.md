@@ -9,7 +9,9 @@ description: >
 
 # WeChat CE Skill — Openclaw Implementation Guide
 
-CE (Chinese↔English) translation is handled **automatically at the plugin level** by patching the `openclaw-weixin` extension. Messages are intercepted in `process-message.ts`, routed through the `ce-handler.py` pipeline (Whisper → Ollama → Edge TTS), and delivered back to the user — all before the agent sees the message.
+CE (Chinese↔English) translation is handled **automatically at the plugin level** by patching the `openclaw-weixin` npm dist. Messages are intercepted in `process-message.js` (the compiled file the gateway actually loads), routed through the `ce-handler.py` pipeline (Whisper → Ollama → Edge TTS), and delivered back to the user — all before the agent sees the message.
+
+> **v1.3 Architecture Note:** OpenClaw loads the compiled npm dist (`~/.openclaw/npm/node_modules/@tencent-weixin/openclaw-weixin/dist/src/messaging/process-message.js`), NOT the TypeScript extension source at `~/.openclaw/extensions/`. All patches target the JS dist file. The reference file is `process-message.patched.js` (not `.ts`).
 
 ---
 
@@ -29,20 +31,22 @@ The following commands are handled at the plugin level. If for any reason one re
 
 ## Implementation Overview
 
-### Plugin patch: `process-message.ts`
+### Plugin patch: `process-message.js` (npm dist)
 
-The CE logic is injected into `openclaw-weixin/src/messaging/process-message.ts` in three places:
+The CE logic is injected into the compiled npm dist at:
+`~/.openclaw/npm/node_modules/@tencent-weixin/openclaw-weixin/dist/src/messaging/process-message.js`
+
+The patch is maintained as `process-message.patched.js` in this skill directory. `patch.sh` applies it by copying this reference file over the npm dist. The code below shows the key additions (the dist is plain ESM JS, not TypeScript):
 
 #### A. Imports (top of file)
-```typescript
+```javascript
 import os from "node:os";
 ```
 
-#### B. Helper functions (before `processOneMessage`)
+#### B. Helper functions (after `MEDIA_OUTBOUND_TEMP_DIR` constant, before `processOneMessage`)
 
-```typescript
-/** Read CE mode state from disk. */
-async function _isCEModeOn(): Promise<boolean> {
+```javascript
+async function _isCEModeOn() {
   const modePath = os.homedir() + "/.openclaw/memory/wechat_ce_mode.json";
   try {
     const { readFile } = await import("node:fs/promises");
@@ -51,34 +55,28 @@ async function _isCEModeOn(): Promise<boolean> {
   } catch { return false; }
 }
 
-/** True if message contains a voice item. */
-function _hasVoiceItem(full: WeixinMessage): boolean {
+function _hasVoiceItem(full) {
   if (!full?.item_list) return false;
   for (const item of full.item_list) { if (item?.voice_item) return true; }
   return false;
 }
 
-/** Handle /CE slash commands; returns reply text or null if not a CE command. */
-async function _handleCECommand(text: string): Promise<string | null> {
+async function _handleCECommand(text) {
   const t = text.trim().toLowerCase();
   const modePath = os.homedir() + "/.openclaw/memory/wechat_ce_mode.json";
   const { readFile, writeFile, mkdir } = await import("node:fs/promises");
-
-  const readMode = async (): Promise<boolean> => {
+  const readMode = async () => {
     try { return JSON.parse(await readFile(modePath, "utf-8"))?.enabled === true; }
     catch { return false; }
   };
-  const writeMode = async (enabled: boolean): Promise<void> => {
+  const writeMode = async (enabled) => {
     await mkdir(os.homedir() + "/.openclaw/memory", { recursive: true });
     await writeFile(modePath, JSON.stringify({ enabled }), "utf-8");
   };
-
   if (t === "/ce" || t === "ce") {
-    const cur = await readMode();
-    await writeMode(!cur);
-    return !cur
-      ? "✅ CE mode ON — I'll translate every message and voice note."
-      : "⏹ CE mode OFF — normal conversation resumed.";
+    const cur = await readMode(); await writeMode(!cur);
+    return !cur ? "✅ CE mode ON — I'll translate every message and voice note."
+                : "⏹ CE mode OFF — normal conversation resumed.";
   }
   if (t === "/ce on" || t === "ce on" || t === "turn on ce") {
     await writeMode(true);
@@ -92,34 +90,24 @@ async function _handleCECommand(text: string): Promise<string | null> {
 }
 ```
 
-#### C. Early CE mode check (inside `processOneMessage`, before media download)
+#### C. CE command handler (inside `processOneMessage`, before slash command block)
 
-Add immediately after `const textBody = extractTextBody(full.item_list);`:
-
-```typescript
-// --- CE slash command: handle /CE, /CE on, /CE off directly (no agent) ---
+```javascript
 const ceReply = await _handleCECommand(textBody);
 if (ceReply !== null) {
   const ceTo = full.from_user_id ?? "";
   const ceCtx = full.context_token ?? undefined;
   try {
-    await sendMessageWeixin({
-      to: ceTo,
-      text: ceReply,
-      opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken: ceCtx },
-    });
-    logger.info(`[ce] command handled: "${textBody.trim()}" → mode updated`);
+    await sendMessageWeixin({ to: ceTo, text: ceReply,
+      opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken: ceCtx } });
   } catch (e) { deps.errLog(`[ce] command reply error: ${String(e)}`); }
   return;
 }
 ```
 
-#### D. CE mode flag (before media download, to avoid race condition)
+#### D. CE mode flag (before media download)
 
-Add immediately before the media download section:
-
-```typescript
-// Check CE mode BEFORE downloading media so a concurrent /ce off is already on disk.
+```javascript
 const _ceActive = !textBody.startsWith("/") && (await _isCEModeOn());
 const _hasVoice = _hasVoiceItem(full);
 const _hasText  = !!textBody && !textBody.startsWith("/");
@@ -127,125 +115,54 @@ const _hasText  = !!textBody && !textBody.startsWith("/");
 
 #### E. CE intercept block (after media download, before agent dispatch)
 
-Replace the existing `// === CE INTERCEPT ===` section:
-
-```typescript
-if (!textBody.startsWith("/")) {
-  if (_ceActive && (_hasVoice || _hasText)) {
-    const ceScriptPath =
-      os.homedir() + "/.openclaw/workspace/skills/openclaw-wechat-ce/scripts/ce-handler.py";
-    const ceTo = full.from_user_id ?? "";
-    const ceContextToken = full.context_token ?? undefined;
-
-    try {
-      const { execFile } = await import("node:child_process");
-
-      let pythonArgs: string[];
-      let ceTimeout: number;
-
-      if (_hasVoice) {
-        let voiceText: string | null = null;
-        if (full.item_list) {
-          for (const item of full.item_list) {
-            if (item?.voice_item?.text) { voiceText = item.voice_item.text; break; }
-          }
-        }
-        if (voiceText) {
-          pythonArgs = ["--text", voiceText];
-          ceTimeout = 60000;
-        } else if (mediaOpts.decryptedVoicePath) {
-          pythonArgs = ["--file", mediaOpts.decryptedVoicePath];
-          ceTimeout = 180000;
-        } else {
-          pythonArgs = [];
-          ceTimeout = 0;
-        }
-      } else {
-        pythonArgs = ["--text", textBody];
-        ceTimeout = 60000;
+```javascript
+if (_ceActive && (_hasVoice || _hasText)) {
+  const ceScriptPath = os.homedir() + "/.openclaw/workspace/skills/wechat-ce/scripts/ce-handler.py";
+  const ceTo = full.from_user_id ?? "";
+  const ceCtx = full.context_token ?? undefined;
+  const { execFile } = await import("node:child_process");
+  let pythonArgs = _hasText ? ["--text", textBody] : [];
+  if (_hasVoice && !_hasText) {
+    let voiceText = null;
+    if (full.item_list) {
+      for (const item of full.item_list) {
+        if (item?.voice_item?.text) { voiceText = item.voice_item.text; break; }
       }
-
-      if (pythonArgs.length > 0) {
-        const { stdout: pyOut } = await new Promise<{ stdout: string }>((resolve, reject) => {
-          execFile(
-            "/usr/bin/python3",
-            [ceScriptPath, ...pythonArgs],
-            { timeout: ceTimeout, maxBuffer: 10 * 1024 * 1024 },
-            (err, stdout, stderr) => {
-              if (err) {
-                if (err.signal === "SIGTERM") reject(new Error("CE handler timed out"));
-                else reject(new Error("CE exited " + err.exitCode + ": " + stderr.slice(0, 300)));
-              } else {
-                resolve({ stdout });
-              }
-            },
-          );
-        });
-
-        const ceResult = JSON.parse(pyOut.trim());
-
-        if (ceResult.error) {
-          await sendMessageWeixin({
-            to: ceTo,
-            text: `⚠️ CE error: ${ceResult.error}`,
-            opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken: ceContextToken },
-          });
-        } else {
-          await sendMessageWeixin({
-            to: ceTo,
-            text: `${ceResult.label}: ${ceResult.text}`,
-            opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken: ceContextToken },
-          });
-          if (ceResult.audio) {
-            try {
-              await sendWeixinMediaFile({
-                filePath: ceResult.audio,
-                to: ceTo,
-                text: "",
-                opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken: ceContextToken },
-                cdnBaseUrl: deps.cdnBaseUrl,
-              });
-            } catch (audioErr) {
-              logger.error(`[ce] audio send error: ${String(audioErr)}`);
-            }
-          }
-        }
-        return;
-      }
-    } catch (ceErr) {
-      logger.error(`[ce] pipeline error: ${String(ceErr)}`);
-      try {
-        await sendMessageWeixin({
-          to: full.from_user_id ?? "",
-          text: `⚠️ CE pipeline error: ${String(ceErr).slice(0, 200)}`,
-          opts: {
-            baseUrl: deps.baseUrl,
-            token: deps.token,
-            contextToken: full.context_token ?? undefined,
-          },
-        });
-      } catch (_) { /* ignore reply error */ }
-      return;
     }
+    pythonArgs = voiceText ? ["--text", voiceText]
+               : mediaOpts.decryptedVoicePath ? ["--file", mediaOpts.decryptedVoicePath]
+               : [];
+  }
+  if (pythonArgs.length > 0) {
+    const raw = await new Promise((resolve, reject) =>
+      execFile("/usr/bin/python3", [ceScriptPath, ...pythonArgs],
+        { timeout: 120000, maxBuffer: 10 * 1024 * 1024 },
+        (err, stdout, stderr) => err ? reject(new Error(stderr.slice(0, 300))) : resolve(stdout))
+    );
+    let ceResult;
+    try { ceResult = JSON.parse(raw); } catch { ceResult = { text: raw }; }
+    const ceTranslation = ceResult.text ?? "";
+    const ceAudioPath   = ceResult.audio ?? "";
+    if (ceAudioPath) {
+      await sendWeixinMediaFile({ filePath: ceAudioPath, to: ceTo, text: ceTranslation,
+        opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken: ceCtx },
+        cdnBaseUrl: deps.cdnBaseUrl });
+    } else if (ceTranslation) {
+      await sendMessageWeixin({ to: ceTo, text: ceTranslation,
+        opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken: ceCtx } });
+    }
+    return;
   }
 }
 ```
 
----
-
-### `send-media.ts` — audio as file attachment
-
-In `openclaw-weixin/src/messaging/send-media.ts`, the `audio/*` MIME type falls through to the generic file attachment path. No special voice-bubble route is needed. The file comment on the fallback block should read:
-
-```typescript
-// File attachment: pdf, doc, zip, audio, etc.
-```
+> **ce-handler.py output format:** Always a single JSON line — `{"label": "English text", "text": "...", "audio": "/tmp/ce-wechat/ce_TIMESTAMP_en.mp3"}`. The intercept sends the MP3 via `sendWeixinMediaFile` with translation as caption. If no audio path, falls back to text-only reply.
 
 ---
 
 ### `ce-handler.py` — pipeline script
 
-Full path: `~/.openclaw/workspace/skills/openclaw-wechat-ce/scripts/ce-handler.py`
+Full path: `~/.openclaw/workspace/skills/wechat-ce/scripts/ce-handler.py`
 
 Key constants:
 ```python
@@ -276,86 +193,73 @@ p = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL
 ### `mode.py` — CLI helper
 
 ```bash
-python3 ~/.openclaw/workspace/skills/openclaw-wechat-ce/scripts/mode.py        # print on/off
-python3 ~/.openclaw/workspace/skills/openclaw-wechat-ce/scripts/mode.py on     # enable
-python3 ~/.openclaw/workspace/skills/openclaw-wechat-ce/scripts/mode.py off    # disable
-python3 ~/.openclaw/workspace/skills/openclaw-wechat-ce/scripts/mode.py toggle # flip
+python3 ~/.openclaw/workspace/skills/wechat-ce/scripts/mode.py        # print on/off
+python3 ~/.openclaw/workspace/skills/wechat-ce/scripts/mode.py on     # enable
+python3 ~/.openclaw/workspace/skills/wechat-ce/scripts/mode.py off    # disable
+python3 ~/.openclaw/workspace/skills/wechat-ce/scripts/mode.py toggle # flip
 ```
 
 State file: `~/.openclaw/memory/wechat_ce_mode.json` → `{"enabled": true}`
 
 ---
 
-## Auto-Update Problem & Survival (v1.2)
+## Auto-Update & Reboot Survival (v1.2 / updated v1.3)
 
-Openclaw automatically updates the `openclaw-weixin` plugin from npm. When this happens, the extension directory is re-extracted from a fresh tarball, **overwriting `process-message.ts`** and removing all CE patches. The gateway then restarts with the stock plugin — CE translation silently stops working.
+`openclaw update` reinstalls the `openclaw-weixin` npm package, overwriting the compiled dist JS and removing all CE patches. The gateway restarts with the stock plugin — CE translation silently stops working.
 
-### v1.2 solution: macOS LaunchAgent with WatchPaths
+### Solution: macOS LaunchAgent with WatchPaths
 
-Two files work together to fully automate patch survival:
+Two files work together:
 
 | File | Purpose |
 |------|---------|
 | `boot-patch.sh` | Checks patch presence; re-applies and restarts gateway if missing |
-| `ai.openclaw.wechat-ce-patch.plist` | LaunchAgent with two triggers: login + WatchPaths |
+| `ai.openclaw.wechat-ce-patch.plist` | LaunchAgent: triggers on login AND whenever npm dist JS is overwritten |
 
 **Two automatic triggers:**
 1. **Every reboot/login** (`RunAtLoad: true`) — ensures patch is present after any restart
-2. **WatchPaths on `process-message.ts`** — fires the instant npm overwrites the file during an update, re-patches and restarts gateway automatically, no manual steps needed
+2. **WatchPaths on the npm dist JS** — fires the instant `openclaw update` overwrites it, re-patches and restarts gateway automatically
+
+**v1.3 change:** WatchPaths watches the JS dist (not the TypeScript extension source):
+```
+~/.openclaw/npm/node_modules/@tencent-weixin/openclaw-weixin/dist/src/messaging/process-message.js
+```
 
 ### One-time setup
 
 ```bash
-# Copy plist to LaunchAgents directory
-cp ~/.openclaw/workspace/skills/openclaw-wechat-ce/ai.openclaw.wechat-ce-patch.plist \
+cp ~/.openclaw/workspace/skills/wechat-ce/ai.openclaw.wechat-ce-patch.plist \
    ~/Library/LaunchAgents/
-
-# Load the agent (survives future reboots automatically)
 launchctl load ~/Library/LaunchAgents/ai.openclaw.wechat-ce-patch.plist
 ```
 
-**Verify it loaded:**
+**Verify:**
 ```bash
-launchctl list | grep wechat-ce
-# → -  0  ai.openclaw.wechat-ce-patch
-```
-
-**Check the log:**
-```bash
+launchctl list | grep wechat-ce   # → -  0  ai.openclaw.wechat-ce-patch
 tail -20 /tmp/openclaw/wechat-ce-patch.log
 ```
 
-### boot-patch.sh logic
-
-```
-1. Log that it was triggered
-2. grep process-message.ts for "_isCEModeOn"
-   → found: log "already present", exit 0
-   → missing: run patch.sh, sleep 3, openclaw gateway --force
-3. Log result
-```
-
-### Manual fallback (if LaunchAgent not set up)
+### Manual fallback
 
 ```bash
-bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh --check
-bash ~/.openclaw/workspace/skills/openclaw-wechat-ce/patch.sh
-openclaw gateway --force
+bash ~/.openclaw/workspace/skills/wechat-ce/patch.sh --check
+bash ~/.openclaw/workspace/skills/wechat-ce/patch.sh
+openclaw gateway restart
 ```
 
 ### patch.sh reference
 
 ```bash
-bash patch.sh            # apply patches (copies process-message.patched.ts → extension)
-bash patch.sh --check    # check if patches are present (read-only, safe to run anytime)
-bash patch.sh --restore  # restore the pre-patch backup (undo)
+bash patch.sh            # apply (copies process-message.patched.js → npm dist)
+bash patch.sh --check    # read-only check for _isCEModeOn marker
+bash patch.sh --restore  # restore from pre-patch backup
 ```
 
 ---
 
 ## Race Condition Notes
 
-CE mode is checked **before** the media download in `process-message.ts`. This means:
+CE mode is checked **before** the media download in `process-message.js`. This means:
 
 - A `/ce off` command that arrives just before a voice message will write `false` to disk
 - The voice message reads the file before starting its (potentially slow) download
@@ -370,9 +274,10 @@ For truly simultaneous messages (recorded voice + `/ce off` sent within millisec
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | CE mode won't turn off | Concurrent voice processing read mode before `/ce off` | Wait ~5s after `/ce off` before sending new voice |
-| No audio file returned | Edge TTS script path wrong | Check `EDGE_TTS_SCRIPT` env var; verify `tts-converter.js` exists |
+| CE sends raw JSON as text | Old intercept code before v1.3 fix | Run `bash patch.sh` to re-apply updated reference |
+| No audio file returned | Edge TTS script path wrong | Check `EDGE_TTS_SCRIPT`; verify `tts-converter.js` exists |
 | `CE exited 1: ...` | Whisper or Ollama not running | `ollama serve &` and check Whisper install |
 | Translation garbled | Wrong Ollama model loaded | `ollama list`; `ollama pull qwen2.5:7b-instruct` |
-| Gateway rejects plugin | TypeScript compile error in patch | Check gateway startup logs in `/tmp/openclaw/openclaw-*.log` |
-| CE translation stops after Openclaw update | Auto-update overwrote `process-message.ts` | Run `bash patch.sh --check`, then `bash patch.sh && openclaw gateway --force` |
-| `patch.sh` says "reference file not found" | `process-message.patched.ts` missing from skill dir | Re-clone the repo or copy the file from GitHub |
+| CE translation stops after `openclaw update` | npm reinstall overwrote `process-message.js` | Run `bash patch.sh --check`, then `bash patch.sh && openclaw gateway restart` |
+| `patch.sh` says "reference file not found" | `process-message.patched.js` missing from skill dir | Re-clone the repo or copy the file from GitHub |
+| `/ce` returns "Unknown command" | Gateway loaded unpatched npm dist | Run `bash patch.sh && openclaw gateway restart` |
